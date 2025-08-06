@@ -3,3 +3,5 @@ venv/
 test/
 model.tflite
 s
+start.txt
+models/plant_disease_classifier_256.keras
