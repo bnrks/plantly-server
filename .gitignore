@@ -5,3 +5,7 @@ model.tflite
 s
 start.txt
 models/plant_disease_classifier_256.keras
+routers/server-secrets/
+server_secrets/
+
+__pycache__/

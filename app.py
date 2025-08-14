@@ -1,8 +1,7 @@
 # app.py ───────────── FastAPI Ana Uygulama
 from fastapi import FastAPI
 from dotenv import load_dotenv
-from routers import predict, chat
-
+from routers import predict, chat,ws_chat
 # ── Ortam değişkenleri
 load_dotenv()
 
@@ -16,7 +15,7 @@ app = FastAPI(
 # ── Router'ları dahil et
 app.include_router(predict.router)
 app.include_router(chat.router)
-
+app.include_router(ws_chat.router)  # /ws/chat websocket endpoint'i gelir
 @app.get("/")
 def root():
     return {"message": "Plantly Server is running!"}
