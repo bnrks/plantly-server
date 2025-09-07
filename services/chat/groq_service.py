@@ -4,10 +4,20 @@
 import os
 import json
 from typing import List, Optional
+from datetime import datetime, timezone
 import httpx
 from dotenv import load_dotenv
 
-from ..database.firestore_service import get_thread_data, fetch_recent_messages
+# === Context & Memory Ayarları ===
+HISTORY_MAX_CHARS = int(os.getenv("HISTORY_MAX_CHARS", "8000"))   # LLM bağlam bütçesi ~8k karakter
+MEMORY_ENABLED = os.getenv("MEMORY_ENABLED", "1") == "1"
+MEMORY_REFRESH_EVERY = int(os.getenv("MEMORY_REFRESH_EVERY", "3"))  # her 3 mesajda bir running summary güncelle
+MEM_FACTS_LIMIT = int(os.getenv("MEM_FACTS_LIMIT", "8"))            # sabit gerçek sayısı
+
+from ..database.firestore_service import (
+    get_thread_data, fetch_recent_messages, thread_ref,
+    get_thread_memory, save_thread_memory, trim_history_by_chars
+)
 
 load_dotenv()
 
@@ -32,7 +42,14 @@ SYSTEM_PROMPT = (
     "- Emin değilsen olasılıklardan bahset ve basit kontrol adımları öner.\n"
     "- Her zaman Türkçe yanıtla.\n"
     "- Eğer son kullanıcı mesajı sadece selamlaşma/teşekkür gibi küçük konuşmaysa KISA bir selamlama yap; teşhis veya bakım listesi verme. Gerekirse 'Size nasıl yardımcı olabilirim?' diye sor.\n"
-    "- Kullanıcı bakım/hastalıkla ilgili soru sorarsa, varsa son teşhisi de dikkate alarak yanıtla."
+    "- Kullanıcı bakım/hastalıkla ilgili soru sorarsa, varsa son teşhisi de dikkate alarak yanıtla.\n\n"
+    "ÖNEMLİ: Yanıtını şu JSON formatında ver:\n"
+    "{\n"
+    '  "content": "Ana cevabın buraya gelsin - soruya dair genel açıklama",\n'
+    '  "notes": ["Bakım önerisi 1", "Bakım önerisi 2", "Bakım önerisi 3"]\n'
+    "}\n"
+    "content: Soruya ana cevabı içersin.\n"
+    "notes: 2-4 adet kısa, net bakım/öneri maddeleri içersin."
 )
 
 SMALLTALK_WORDS = {
@@ -52,24 +69,31 @@ def is_smalltalk(text: Optional[str]) -> bool:
     return (len(t) <= 40) and any(w in t for w in SMALLTALK_WORDS)
 
 
-def build_llm_messages(
-    uid: str,
-    thread_id: str,
-    user_text: Optional[str],
-    *,
-    append_user_text: bool = True,
-    force_include_diag: Optional[bool] = None,
-    history_k: int = 20
-) -> List[dict]:
-    """LLM için mesaj listesi oluştur"""
-    t_data = get_thread_data(uid, thread_id)
+def build_llm_messages(uid: str, thread_id: str, user_text: Optional[str],
+                       *, append_user_text: bool = True,
+                       force_include_diag: Optional[bool] = None,
+                       history_k: int = 20) -> List[dict]:
+
+    t_snap = thread_ref(uid, thread_id).get()
+    t_data = t_snap.to_dict() or {}
     last_diag = t_data.get("lastDiagnosis")
+    memory = (t_data.get("memory") or {}) if MEMORY_ENABLED else {}
 
     history = fetch_recent_messages(uid, thread_id, limit_n=history_k)
+    # (A) bütçeye göre kırp
+    history = trim_history_by_chars(history, HISTORY_MAX_CHARS)
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
-    # Teşhisi duruma göre ekle
+    # (B) hafıza (özet + sabit gerçekler) en başa
+    if memory:
+        if memory.get("summary"):
+            messages.append({"role":"system", "content": f"Konuşma özeti: {memory['summary']}"})
+        facts = memory.get("facts") or []
+        if facts:
+            messages.append({"role":"system", "content": "Sabit gerçekler:\n- " + "\n- ".join(facts)})
+
+    # teşhis ekleme logic'i (senin mevcut kodun)
     include_diag = False
     if force_include_diag is not None:
         include_diag = force_include_diag
@@ -80,26 +104,23 @@ def build_llm_messages(
         diag_line = f"Son teşhis: {last_diag.get('classTr', last_diag.get('class'))} (%{round(float(last_diag.get('confidence', 0))*100)})"
         messages.append({"role": "system", "content": diag_line})
 
-    # Geçmişi ekle
+    # geçmiş mesajlar (senin mevcut döngün)
     for m in history:
         r = m.get("role")
+        c = m.get("content", "")
         if r == "systemEvent":
             try:
-                payload = m.get("content", {})
-                if isinstance(payload, str):
-                    payload = json.loads(payload)
+                payload = c if isinstance(c, dict) else json.loads(c)
                 if payload.get("type") == "diagnosis" and include_diag:
-                    cls = payload.get("class")
-                    tr = CLASS_TR.get(cls, cls)
+                    cls = payload.get("class"); tr  = CLASS_TR.get(cls, cls)
                     conf = float(payload.get("confidence", 0))
                     messages.append({"role": "system", "content": f"Teşhis: {tr} (%{round(conf*100)})"})
             except Exception:
                 pass
         elif r in ("user", "assistant"):
-            content = m.get("content", "")
-            if isinstance(content, dict):
-                content = json.dumps(content, ensure_ascii=False)
-            messages.append({"role": r, "content": content})
+            if isinstance(c, dict):
+                c = json.dumps(c, ensure_ascii=False)
+            messages.append({"role": r, "content": c})
 
     if user_text and append_user_text:
         messages.append({"role": "user", "content": user_text})
@@ -107,8 +128,9 @@ def build_llm_messages(
     return messages
 
 
+
 async def call_groq_api(messages: List[dict]) -> str:
-    """Groq API'ye çağrı yap"""
+    """Groq API'ye çağrı yap - sadece raw text döndürür"""
     if not GROQ_API_KEY:
         raise RuntimeError("GROQ_API_KEY tanımlı değil.")
     
@@ -124,6 +146,60 @@ async def call_groq_api(messages: List[dict]) -> str:
     data = resp.json()
     text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
     return (text or "").strip()
+
+
+async def call_groq_api_structured(messages: List[dict]) -> dict:
+    """Groq API'ye çağrı yap ve JSON yanıt parse et"""
+    raw_response = await call_groq_api(messages)
+    
+    try:
+        # JSON parse et
+        response_data = json.loads(raw_response)
+        
+        # Doğrula
+        if not isinstance(response_data, dict):
+            raise ValueError("Response dict değil")
+            
+        content = response_data.get("content", "")
+        notes = response_data.get("notes", [])
+        
+        if not isinstance(notes, list):
+            notes = []
+            
+        return {
+            "content": content,
+            "notes": notes
+        }
+        
+    except (json.JSONDecodeError, ValueError, KeyError):
+        # JSON parse edilemezse fallback
+        return {
+            "content": raw_response,
+            "notes": []
+        }
+
+
+async def generate_conversation_title(user_message: str) -> str:
+    """İlk kullanıcı mesajına göre konuşma başlığı üret"""
+    title_prompt = f"""Aşağıdaki kullanıcı mesajına göre kısa ve öz bir başlık oluştur. 
+Başlık maksimum 5-6 kelime olsun ve bitki sağlığı/hastalıkları konusuyla ilgili olsun.
+
+Kullanıcı mesajı: "{user_message}"
+
+Sadece başlığı döndür, başka bir şey yazma."""
+
+    messages = [{"role": "user", "content": title_prompt}]
+    
+    try:
+        title = await call_groq_api(messages)
+        # Başlığı temizle ve kısalt
+        title = title.strip().strip('"').strip("'")
+        if len(title) > 60:
+            title = title[:60] + "..."
+        return title
+    except Exception:
+        # Hata durumunda varsayılan başlık
+        return "Bitki Sağlığı Danışmanlığı"
 
 
 def generate_fallback_reply(cls: str, conf: float) -> str:
@@ -167,3 +243,74 @@ def generate_fallback_reply(cls: str, conf: float) -> str:
     
     para = f"Son teşhise göre **{tr}** olasılığı yüksek (≈%{pct}). Aşağıdaki adımları uygulayabilirsin:"
     return para + "\n- " + "\n- ".join(tips)
+
+
+async def summarize_into_memory(uid: str, thread_id: str, recent: List[dict]):
+    """
+    recent: bu turda eklenecek kısa geçmiş (trimlenmiş)
+    memory: summary + facts güncellenir
+    """
+    if not MEMORY_ENABLED:
+        return
+
+    prev = get_thread_memory(uid, thread_id)
+    prev_summary = prev.get("summary", "")
+    prev_facts = prev.get("facts", [])
+
+    # LLM’e temiz, kısa bir özet isteyeceğiz (JSON zorunlu)
+    sys = (
+        "Aşağıdaki sohbet dökümünden KISA bir özet çıkar ve kalıcı, değişmesi zor 'sabit gerçekleri' listele. "
+        "Sadece JSON döndür:\n"
+        "{ \"summary\": \"1-2 cümle\", \"facts\": [\"...\", \"...\"] }"
+    )
+
+    msgs = [{"role":"system","content":sys}]
+    if prev_summary or prev_facts:
+        msgs.append({"role":"system","content":f"Önceki özet: {prev_summary}\nÖnceki sabitler: {prev_facts}"})
+
+    # son 8-12 ile sınırlı küçük bir blok yeterli
+    block = recent[-12:]
+    for m in block:
+        r = m.get("role")
+        c = m.get("content")
+        if isinstance(c, dict): c = json.dumps(c, ensure_ascii=False)
+        # systemEvent teşhisleri ipucu olsun
+        if r == "systemEvent":
+            try:
+                p = m["content"]
+                if isinstance(p, str): p = json.loads(p)
+                if p.get("type") == "diagnosis":
+                    tr = CLASS_TR.get(p.get("class"), p.get("class"))
+                    c = f"[TEŞHİS] {tr} (%{round(float(p.get('confidence',0))*100)})"
+            except Exception:
+                pass
+            r = "system"
+        msgs.append({"role": r, "content": c})
+
+    try:
+        headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+        payload = {"model": GROQ_MODEL, "messages": msgs, "temperature": 0.2}
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(GROQ_API_URL, headers=headers, json=payload)
+        data = resp.json()
+        out = (data.get("choices",[{}])[0].get("message",{}) or {}).get("content","").strip()
+        mem = json.loads(out)
+        # kısıtla ve birleştir
+        facts = (mem.get("facts") or [])[:MEM_FACTS_LIMIT]
+        summary = (mem.get("summary") or prev_summary).strip()
+        memory = {
+            "summary": summary if summary else prev_summary,
+            "facts": facts if facts else prev_facts,
+            "updatedAt": datetime.now(timezone.utc),
+            "msgCount": int(prev.get("msgCount",0)) + 1
+        }
+        save_thread_memory(uid, thread_id, memory)
+    except Exception:
+        # sessiz fallback: en azından sayaç güncellensin
+        memory = {
+            "summary": prev_summary,
+            "facts": prev_facts,
+            "updatedAt": datetime.now(timezone.utc),
+            "msgCount": int(prev.get("msgCount",0)) + 1
+        }
+        save_thread_memory(uid, thread_id, memory)

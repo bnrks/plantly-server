@@ -10,10 +10,12 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException, Up
 from services.connection.websocket_manager import WebSocketManager
 from services.auth.firebase_auth import verify_id_token_or_raise
 from services.database.firestore_service import (
-    ensure_thread, add_message, update_last_diagnosis
+    ensure_thread, add_message, update_last_diagnosis, fetch_recent_messages,
+    update_thread_title, is_first_assistant_message
 )
 from services.chat.groq_service import (
-    build_llm_messages, call_groq_api, generate_fallback_reply
+    build_llm_messages, call_groq_api, call_groq_api_structured, generate_fallback_reply, summarize_into_memory,
+    generate_conversation_title
 )
 from services.ml.prediction_service import run_cnn_prediction
 
@@ -22,6 +24,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 ALWAYS_NEW_THREAD_ON_INIT = os.getenv("ALWAYS_NEW_THREAD_ON_INIT", "0") == "1"
+# === Context & Memory Ayarları ===
+HISTORY_MAX_CHARS = int(os.getenv("HISTORY_MAX_CHARS", "8000"))   # LLM bağlam bütçesi ~8k karakter
+MEMORY_ENABLED = os.getenv("MEMORY_ENABLED", "1") == "1"
+MEMORY_REFRESH_EVERY = int(os.getenv("MEMORY_REFRESH_EVERY", "3"))  # her 3 mesajda bir running summary güncelle
+MEM_FACTS_LIMIT = int(os.getenv("MEM_FACTS_LIMIT", "8"))            # sabit gerçek sayısı
 
 router = APIRouter()
 
@@ -94,16 +101,42 @@ async def chat_ws(websocket: WebSocket):
 
                 add_message(uid, thread_id, role="user", content=text)
 
+                # İlk assistant mesajı mı kontrol et
+                is_first = is_first_assistant_message(uid, thread_id)
+
                 messages = build_llm_messages(uid, thread_id, user_text=None)
-                assistant_text = await call_groq_api(messages)
+                assistant_response = await call_groq_api_structured(messages)
 
-                asst_mid = add_message(uid, thread_id, role="assistant", content=assistant_text)
+                # İlk mesajsa title üret
+                title = None
+                if is_first:
+                    title = await generate_conversation_title(text)
+                    update_thread_title(uid, thread_id, title)
 
-                await manager.broadcast(thread_id, {
+                # Structured response'u database'e kaydet
+                asst_mid = add_message(uid, thread_id, role="assistant", content=assistant_response)
+                if MEMORY_ENABLED:
+                    recent = fetch_recent_messages(uid, thread_id, limit_n=20)
+                    if len(recent) % MEMORY_REFRESH_EVERY == 0:
+                         await summarize_into_memory(uid, thread_id, recent)
+                
+                # Response hazırla
+                response = {
                     "type": "message",
                     "thread_id": thread_id,
-                    "message": {"role": "assistant", "content": assistant_text, "id": asst_mid}
-                })
+                    "message": {
+                        "role": "assistant", 
+                        "content": assistant_response["content"],
+                        "notes": assistant_response["notes"],
+                        "id": asst_mid
+                    }
+                }
+                
+                # İlk mesajsa title ekle
+                if title:
+                    response["title"] = title
+                    
+                await manager.broadcast(thread_id, response)
 
             elif mtype == "diagnosis":
                 cls = data.get("class")

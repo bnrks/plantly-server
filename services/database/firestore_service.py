@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Optional, List, Any
 from fastapi import HTTPException
 from google.cloud import firestore
-
+import json 
 from ..auth.firebase_auth import get_project_id
 
 # Firestore client - lazy initialization için fonksiyon kullanacağız
@@ -99,6 +99,17 @@ def add_message(uid: str, thread_id: str,
     return doc.id
 
 
+def update_thread_title(uid: str, thread_id: str, title: str) -> None:
+    """Thread'in title'ını güncelle"""
+    thread_ref(uid, thread_id).update({"title": title})
+
+
+def is_first_assistant_message(uid: str, thread_id: str) -> bool:
+    """Bu thread'de ilk assistant mesajı mı kontrol et"""
+    messages = messages_col(uid, thread_id).where("role", "==", "assistant").limit(1).stream()
+    return len(list(messages)) == 0
+
+
 def update_last_diagnosis(uid: str, thread_id: str,
                           cls: str, conf: float, image_ref: Optional[str] = None):
     """Thread'in son teşhis bilgisini güncelle"""
@@ -129,3 +140,33 @@ def get_thread_data(uid: str, thread_id: str) -> dict:
     """Thread verilerini getir"""
     t_snap = thread_ref(uid, thread_id).get()
     return t_snap.to_dict() or {}
+
+
+def _stringify_for_budget(m: dict) -> str:
+    r = m.get("role", "")
+    c = m.get("content", "")
+    if isinstance(c, dict): c = json.dumps(c, ensure_ascii=False)
+    return f"{r}:{c}\n"
+
+def trim_history_by_chars(history: List[dict], max_chars: int) -> List[dict]:
+    total = 0
+    kept = []
+    # en sondan başlayıp geriye topla
+    for m in reversed(history):
+        s = _stringify_for_budget(m)
+        if total + len(s) > max_chars:
+            break
+        kept.append(m)
+        total += len(s)
+    kept.reverse()
+    return kept
+
+
+def get_thread_memory(uid: str, thread_id: str) -> dict:
+    snap = thread_ref(uid, thread_id).get()
+    data = snap.to_dict() or {}
+    return data.get("memory", {})
+
+def save_thread_memory(uid: str, thread_id: str, memory: dict):
+    thread_ref(uid, thread_id).set({"memory": memory}, merge=True)
+
