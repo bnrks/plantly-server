@@ -353,14 +353,6 @@ python -c "import app; print('Debug mode')"
 uvicorn app:app --reload --log-level debug
 ```
 
-## 🤝 Katkıda Bulunma
-
-1. Fork edin
-2. Feature branch oluşturun: `git checkout -b feature/yeni-ozellik`
-3. Commit yapın: `git commit -m 'Yeni özellik eklendi'`
-4. Push edin: `git push origin feature/yeni-ozellik`
-5. Pull Request açın
-
 ## 📄 Lisans
 
 Bu proje MIT lisansı altında lisanslanmıştır. Detaylar için [LICENSE](LICENSE) dosyasını inceleyin.
@@ -368,25 +360,5 @@ Bu proje MIT lisansı altında lisanslanmıştır. Detaylar için [LICENSE](LICE
 ## 👨‍💻 Geliştirici
 
 **bnrks** - [GitHub Profile](https://github.com/bnrks)
-
-## 🆘 Destek
-
-Sorunlarınız için:
-
-- **Issues**: [GitHub Issues](https://github.com/bnrks/plantly-server/issues)
-- **Discussions**: Genel sorular ve tartışmalar
-- **Email**: Kritik güvenlik sorunları için
-
-## 📋 TODO
-
-- [ ] Model performansı iyileştirmeleri
-- [ ] Daha fazla hastalık desteği
-- [ ] REST API v2
-- [ ] Rate limiting
-- [ ] Metrics ve monitoring
-- [ ] Unit testler
-- [ ] CI/CD pipeline
-
----
 
 ⭐ **Bu projeyi beğendiyseniz yıldız vermeyi unutmayın!**
