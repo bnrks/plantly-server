@@ -45,11 +45,15 @@ SYSTEM_PROMPT = (
     "- Kullanıcı bakım/hastalıkla ilgili soru sorarsa, varsa son teşhisi de dikkate alarak yanıtla.\n\n"
     "ÖNEMLİ: Yanıtını şu JSON formatında ver:\n"
     "{\n"
-    '  "content": "Ana cevabın buraya gelsin - soruya dair genel açıklama",\n'
-    '  "notes": ["Bakım önerisi 1", "Bakım önerisi 2", "Bakım önerisi 3"]\n'
+    '  "content": "Ana cevabın buraya gelsin",\n'
+    '  "notes": ["Sadece gerçek bakım önerileri varsa ekle"]\n'
     "}\n"
-    "content: Soruya ana cevabı içersin.\n"
-    "notes: 2-4 adet kısa, net bakım/öneri maddeleri içersin."
+    "KURALLER:\n"
+    "- content: Her zaman doldur\n"
+    "- notes: Sadece bitki bakımı/hastalık tedavisi önerileri varsa doldur\n"
+    "- Selamlaşma, teşekkür, genel sohbet durumlarında notes boş array [] ver\n"
+    "- notes her elemanı kısa ve net olsun (maksimum 1 cümle)\n"
+    "- notes sadece actionable (yapılabilir) öneriler içersin"
 )
 
 SMALLTALK_WORDS = {

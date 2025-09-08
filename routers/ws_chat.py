@@ -121,15 +121,21 @@ async def chat_ws(websocket: WebSocket):
                          await summarize_into_memory(uid, thread_id, recent)
                 
                 # Response hazırla
+                message_data = {
+                    "role": "assistant", 
+                    "content": assistant_response["content"],
+                    "id": asst_mid
+                }
+                
+                # Notes varsa ekle
+                notes = assistant_response.get("notes", [])
+                if notes and len(notes) > 0:
+                    message_data["notes"] = notes
+                
                 response = {
                     "type": "message",
                     "thread_id": thread_id,
-                    "message": {
-                        "role": "assistant", 
-                        "content": assistant_response["content"],
-                        "notes": assistant_response["notes"],
-                        "id": asst_mid
-                    }
+                    "message": message_data
                 }
                 
                 # İlk mesajsa title ekle
