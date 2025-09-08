@@ -39,10 +39,15 @@
 
 ### 📁 Proje Yapısı
 
-```
+````
 plantly-server/
+├── .env                            # Ortam değişkenleri
+├── .gitignore                      # Git ignore dosyası
 ├── app.py                          # FastAPI ana uygulama
+├── requirements.txt                # Python bağımlılıkları
 ├── start.txt                       # Sunucu başlatma komutları
+├── test.py                         # Test dosyası
+├── ornek_yaprak.jpg                # Test görseli
 ├── models/
 │   └── plant_disease_classifier_256.keras  # CNN modeli (ayrı indirin)
 ├── routers/                        # API endpoint'leri
@@ -51,22 +56,25 @@ plantly-server/
 │   ├── ws_chat.py                  # WebSocket chat endpoint'i
 │   └── server-secrets/             # Firebase kimlik bilgileri
 │       └── plantly-admin.json
-├── services/                       # İş mantığı servisleri
-│   ├── predictService.py           # Model yükleme ve ön işleme
-│   ├── auth/                       # Kimlik doğrulama
-│   │   └── firebase_auth.py
-│   ├── chat/                       # AI chat servisi
-│   │   └── groq_service.py
-│   ├── connection/                 # WebSocket yönetimi
-│   │   └── websocket_manager.py
-│   ├── database/                   # Veritabanı işlemleri
-│   │   └── firestore_service.py
-│   └── ml/                         # Makine öğrenmesi
-│       └── prediction_service.py
-└── ornek_yaprak.jpg                # Test görseli
-```
-
-### 🔧 Teknoloji Stack'i
+└── services/                       # İş mantığı servisleri
+    ├── __init__.py
+    ├── predictService.py           # Model yükleme ve ön işleme
+    ├── auth/                       # Kimlik doğrulama
+    │   ├── __init__.py
+    │   └── firebase_auth.py
+    ├── chat/                       # AI chat servisi
+    │   ├── __init__.py
+    │   └── groq_service.py
+    ├── connection/                 # WebSocket yönetimi
+    │   ├── __init__.py
+    │   └── websocket_manager.py
+    ├── database/                   # Veritabanı işlemleri
+    │   ├── __init__.py
+    │   └── firestore_service.py
+    └── ml/                         # Makine öğrenmesi
+        ├── __init__.py
+        └── prediction_service.py
+```### 🔧 Teknoloji Stack'i
 
 #### Backend Framework
 
@@ -110,7 +118,7 @@ plantly-server/
 ```bash
 git clone https://github.com/bnrks/plantly-server.git
 cd plantly-server
-```
+````
 
 ### 2. Sanal Ortam Oluşturun
 
@@ -123,8 +131,15 @@ venv\Scripts\activate  # Windows
 ### 3. Bağımlılıkları Yükleyin
 
 ```bash
+pip install -r requirements.txt
+```
+
+Ya da manuel olarak:
+
+```bash
 pip install fastapi uvicorn tensorflow pillow numpy python-dotenv
 pip install firebase-admin google-cloud-firestore httpx pydantic
+pip install python-multipart websockets
 ```
 
 ### 4. Model Dosyasını İndirin
@@ -206,7 +221,7 @@ Content-Type: application/json
 
 ```json
 {
-  "answer": "{\"results\": {\"paragraph\": \"Bitkinizin Bakteriyel Lekelenme hastalığına yakalandığı tespit edildi.\", \"suggestions\": [\"Etkilenen yaprakları temizleyin\", \"Bakır içerikli fungisit uygulayın\"]}}"
+  "answer": "{\"content\": \"Bitkinizin Bakteriyel Lekelenme hastalığına yakalandığı tespit edildi. Bu hastalık yapraklarda kahverengi lekeler oluşturur ve zamanında müdahale edilmezse bitkiyi ciddi şekilde etkileyebilir.\", \"notes\": [\"Etkilenen yaprakları temizleyin ve imha edin\", \"Bakır içerikli fungisit uygulayın\", \"Sulamayı yapraklara değmeyecek şekilde topraktan yapın\", \"Bitki çevresindeki hava sirkülasyonunu artırın\"]}"
 }
 ```
 
@@ -221,23 +236,33 @@ ws.send(
     type: "init",
     idToken: "firebase-id-token",
     thread_id: "optional-thread-id",
+    new_thread: false, // yeni thread oluşturmak için true
   })
 );
 
-// Mesaj gönderme
+// Metin mesajı gönderme
 ws.send(
   JSON.stringify({
-    type: "text_message",
-    content: "Bitkimin yaprağında lekeler var, ne yapmalıyım?",
+    type: "user_text",
+    text: "Bitkimin yaprağında lekeler var, ne yapmalıyım?",
   })
 );
 
-// Görsel gönderme (Base64)
+// Teşhis mesajı (görsel analiz sonucu)
 ws.send(
   JSON.stringify({
-    type: "image_message",
-    image_data: "base64-encoded-image",
-    content: "Bu yaprağa bir bakabilir misin?",
+    type: "diagnosis",
+    class: "bacterial_spot",
+    confidence: 0.87,
+    image_ref: "optional-image-reference",
+    auto_reply: true,
+  })
+);
+
+// Ping mesajı
+ws.send(
+  JSON.stringify({
+    type: "ping",
   })
 );
 ```
@@ -267,12 +292,23 @@ ws.send(
 FROM python:3.9-slim
 
 WORKDIR /app
-COPY requirements.txt .
-RUN pip install -r requirements.txt
 
+# Sistem bağımlılıklarını yükle
+RUN apt-get update && apt-get install -y \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python bağımlılıklarını yükle
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Uygulama dosyalarını kopyala
 COPY . .
+
+# Port'u aç
 EXPOSE 8000
 
+# Uygulamayı başlat
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
 ```
 
