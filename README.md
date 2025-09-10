@@ -144,7 +144,7 @@ pip install python-multipart websockets
 
 ### 4. Model Dosyasını İndirin
 
-🔗 **Model Dosyası**: [Google Drive Linki Buraya Eklenecek]
+🔗 **Model Dosyası**: [Google Drive](https://drive.google.com/file/d/1ygCSNlgpCZjelNbKwjZwRo7Q_0gRiz1Y/view?usp=sharing)]
 
 İndirilen `plant_disease_classifier_256.keras` dosyasını `models/` klasörüne yerleştirin.
 
