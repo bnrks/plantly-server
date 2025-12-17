@@ -3,7 +3,9 @@ fastapi==0.104.1
 uvicorn[standard]==0.24.0
 
 # Machine Learning
-tensorflow==2.15.0
+# NOTE: `ml/models/mobilenetv2_final.keras` was saved with newer Keras serialization.
+# TensorFlow 2.16+ bundles Keras 3-compatible loading.
+tensorflow==2.16.1
 numpy==1.24.3
 Pillow==10.1.0
 

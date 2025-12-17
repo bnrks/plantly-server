@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from google.cloud import firestore
 import json 
 from ..auth.firebase_auth import get_project_id
+from services.ml.class_translations import to_tr_label
 
 # Firestore client - lazy initialization için fonksiyon kullanacağız
 _fs_client = None
@@ -18,14 +19,6 @@ def get_firestore_client():
     if _fs_client is None:
         _fs_client = firestore.Client(project=get_project_id())
     return _fs_client
-
-# Class mapping for Turkish translations
-CLASS_TR = {
-    "healthy": "Sağlıklı",
-    "bacterial_spot": "Bakteriyel leke",
-    "early_blight": "Erken yanıklık",
-    "late_blight": "Geç yanıklık",
-}
 
 
 def threads_col(uid: str):
@@ -113,7 +106,7 @@ def is_first_assistant_message(uid: str, thread_id: str) -> bool:
 def update_last_diagnosis(uid: str, thread_id: str,
                           cls: str, conf: float, image_ref: Optional[str] = None):
     """Thread'in son teşhis bilgisini güncelle"""
-    tr = CLASS_TR.get(cls, cls)
+    tr = to_tr_label(cls)
     thread_ref(uid, thread_id).set({
         "lastDiagnosis": {
             "class": cls,
@@ -134,13 +127,6 @@ def fetch_recent_messages(uid: str, thread_id: str, limit_n: int = 20) -> List[d
     items = [d.to_dict() for d in docs]
     items.reverse()
     return items
-
-
-def get_thread_data(uid: str, thread_id: str) -> dict:
-    """Thread verilerini getir"""
-    t_snap = thread_ref(uid, thread_id).get()
-    return t_snap.to_dict() or {}
-
 
 def _stringify_for_budget(m: dict) -> str:
     r = m.get("role", "")

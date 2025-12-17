@@ -56,9 +56,6 @@ def get_class_names() -> list:
 
 def get_class_turkish_names() -> dict:
     """Sınıf isimlerinin Türkçe karşılıklarını döndür"""
-    return {
-        "healthy": "Sağlıklı",
-        "bacterial_spot": "Bakteriyel leke",
-        "early_blight": "Erken yanıklık",
-        "late_blight": "Geç yanıklık",
-    }
+    # Not: model label'ları `Plant__Condition` formatında geliyor.
+    from services.ml.class_translations import CLASS_TR
+    return dict(CLASS_TR)

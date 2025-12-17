@@ -11,3 +11,6 @@ server_secrets/
 __pycache__/
 __init__.py
 *.pyc
+
+.github/
+*.keras

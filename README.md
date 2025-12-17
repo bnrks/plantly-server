@@ -48,8 +48,11 @@ plantly-server/
 ├── start.txt                       # Sunucu başlatma komutları
 ├── test.py                         # Test dosyası
 ├── ornek_yaprak.jpg                # Test görseli
-├── models/
-│   └── plant_disease_classifier_256.keras  # CNN modeli (ayrı indirin)
+├── ml/
+│   ├── classes/
+│   │   └── classes.json                   # Model class listesi
+│   └── models/
+│       └── mobilenetv2_final.keras        # CNN inference modeli
 ├── routers/                        # API endpoint'leri
 │   ├── predict.py                  # Hastalık tespiti endpoint'i
 │   ├── chat.py                     # HTTP chat endpoint'i
@@ -134,6 +137,9 @@ venv\Scripts\activate  # Windows
 pip install -r requirements.txt
 ```
 
+> Not: `ml/models/mobilenetv2_final.keras` için TensorFlow/Keras sürüm uyumluluğu gerekir.
+> `requirements.txt` içindeki TensorFlow sürümünü kullanın.
+
 Ya da manuel olarak:
 
 ```bash
@@ -142,11 +148,10 @@ pip install firebase-admin google-cloud-firestore httpx pydantic
 pip install python-multipart websockets
 ```
 
-### 4. Model Dosyasını İndirin
+### 4. Model Dosyasını Hazırlayın
 
-🔗 **Model Dosyası**: [Google Drive](https://drive.google.com/file/d/1ygCSNlgpCZjelNbKwjZwRo7Q_0gRiz1Y/view?usp=sharing)]
-
-İndirilen `plant_disease_classifier_256.keras` dosyasını `models/` klasörüne yerleştirin.
+- Inference modeli: `ml/models/mobilenetv2_final.keras`
+- Class listesi: `ml/classes/classes.json`
 
 ### 5. Firebase Konfigürasyonu
 

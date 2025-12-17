@@ -5,8 +5,14 @@ import os
 import json
 from typing import List, Optional
 from datetime import datetime, timezone
+
 import httpx
 from dotenv import load_dotenv
+
+from services.ml.class_translations import to_tr_label
+
+# .env'yi mümkün olduğunca erken yükle (env read'leri doğru olsun)
+load_dotenv()
 
 # === Context & Memory Ayarları ===
 HISTORY_MAX_CHARS = int(os.getenv("HISTORY_MAX_CHARS", "8000"))   # LLM bağlam bütçesi ~8k karakter
@@ -15,29 +21,20 @@ MEMORY_REFRESH_EVERY = int(os.getenv("MEMORY_REFRESH_EVERY", "3"))  # her 3 mesa
 MEM_FACTS_LIMIT = int(os.getenv("MEM_FACTS_LIMIT", "8"))            # sabit gerçek sayısı
 
 from ..database.firestore_service import (
-    get_thread_data, fetch_recent_messages, thread_ref,
+    fetch_recent_messages, thread_ref,
     get_thread_memory, save_thread_memory, trim_history_by_chars
 )
-
-load_dotenv()
 
 # Groq Configuration
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
 
-# Constants
-CLASS_TR = {
-    "healthy": "Sağlıklı",
-    "bacterial_spot": "Bakteriyel leke",
-    "early_blight": "Erken yanıklık",
-    "late_blight": "Geç yanıklık",
-}
-
 SYSTEM_PROMPT = (
     "Sen bitki sağlığı ve bakımında uzman bir asistansın.\n"
-    "- Hastalık isimlerini Türkçe kullan: healthy=Sağlıklı, bacterial_spot=Bakteriyel leke, "
-    "early_blight=Erken yanıklık, late_blight=Geç yanıklık.\n"
+    "- Modelden/servisten gelen teşhis etiketleri İngilizce ve teknik olabilir (örn. Apple__Apple_Scab). "
+    "Bu ham etiketleri KESİNLİKLE kullanıcıya aynen gösterme.\n"
+    "- Teşhis varsa bunu mutlaka Türkçe ve sade şekilde ifade et (örn. 'Elma - Karalekesi').\n"
     "- Kullanıcıyı boğmadan net, adım adım öneriler ver.\n"
     "- Emin değilsen olasılıklardan bahset ve basit kontrol adımları öner.\n"
     "- Her zaman Türkçe yanıtla.\n"
@@ -105,7 +102,8 @@ def build_llm_messages(uid: str, thread_id: str, user_text: Optional[str],
         include_diag = not is_smalltalk(user_text)
 
     if last_diag and include_diag:
-        diag_line = f"Son teşhis: {last_diag.get('classTr', last_diag.get('class'))} (%{round(float(last_diag.get('confidence', 0))*100)})"
+        tr_name = (last_diag.get("classTr") or "").strip() or to_tr_label(str(last_diag.get("class") or ""))
+        diag_line = f"Son teşhis: {tr_name} (%{round(float(last_diag.get('confidence', 0))*100)})"
         messages.append({"role": "system", "content": diag_line})
 
     # geçmiş mesajlar (senin mevcut döngün)
@@ -116,7 +114,8 @@ def build_llm_messages(uid: str, thread_id: str, user_text: Optional[str],
             try:
                 payload = c if isinstance(c, dict) else json.loads(c)
                 if payload.get("type") == "diagnosis" and include_diag:
-                    cls = payload.get("class"); tr  = CLASS_TR.get(cls, cls)
+                    cls = payload.get("class")
+                    tr = to_tr_label(str(cls or ""))
                     conf = float(payload.get("confidence", 0))
                     messages.append({"role": "system", "content": f"Teşhis: {tr} (%{round(conf*100)})"})
             except Exception:
@@ -130,7 +129,6 @@ def build_llm_messages(uid: str, thread_id: str, user_text: Optional[str],
         messages.append({"role": "user", "content": user_text})
 
     return messages
-
 
 
 async def call_groq_api(messages: List[dict]) -> str:
@@ -208,42 +206,115 @@ Sadece başlığı döndür, başka bir şey yazma."""
 
 def generate_fallback_reply(cls: str, conf: float) -> str:
     """Teşhis için yedek yanıt oluştur"""
-    tr_map = {
-        "healthy": "Sağlıklı",
-        "bacterial_spot": "Bakteriyel leke",
-        "early_blight": "Erken yanıklık",
-        "late_blight": "Geç yanıklık",
-    }
-    tr = tr_map.get(cls, cls)
+    tr = to_tr_label(cls)
     pct = round(conf*100)
-    
-    if cls == "healthy":
+
+    # label format: Plant__Condition
+    condition = (cls.split("__", 1)[1] if "__" in (cls or "") else "").lower()
+
+    if condition == "healthy":
         tips = [
             "Aşırı sulamadan kaçın ve saksı drenajını koru.",
             "Haftada 1–2 kez genel durum kontrolü yap.",
             "Güneş ve hava sirkülasyonunu yeterli tut."
         ]
-    elif cls == "bacterial_spot":
+    elif "bacterial_spot" in condition:
         tips = [
             "Etkilenen yaprakları steril makasla uzaklaştır.",
             "Yaprakları ıslatmadan dipten sulama yap.",
             "Bitkiler arasında hava sirkülasyonu için mesafe bırak.",
             "Bakır içerikli ürünleri etiketine uygun ve gerektiğinde kullanmayı değerlendir."
         ]
-    elif cls == "early_blight":
+    elif "early_blight" in condition:
         tips = [
             "Hasta yaprakları topla ve çöpe at (kompost yapma).",
             "Sulamayı sabah erken saatlerde ve toprağa yap.",
             "Alt yaprakları seyreltip hava akışını artır.",
             "Gerekirse etiketine uygun mantar hastalığına yönelik ürün kullan."
         ]
-    else:  # late_blight
-        tips = [
-            "Şiddetli lekeli yaprakları derhal uzaklaştır.",
-            "Yaprak ıslaklığını azalt: üstten sulamadan kaçın.",
-            "Bitkiyi iyi havalanan bir konuma al.",
-            "Gerekirse uygun fungisitleri etiketine uygun kullanmayı değerlendir."
-        ]
+    else:  # diğer hastalıklar
+        if "late_blight" in condition:
+            tips = [
+                "Şiddetli lekeli yaprakları derhal uzaklaştır.",
+                "Yaprak ıslaklığını azalt: üstten sulamadan kaçın.",
+                "Bitkiyi iyi havalanan bir konuma al.",
+                "Gerekirse uygun fungisitleri etiketine uygun kullanmayı değerlendir."
+            ]
+        elif "apple_scab" in condition:
+            tips = [
+                "Dökülen yaprakları/lekeli yaprakları topla ve imha et.",
+                "Üstten sulamadan kaçın; yaprak ıslaklığını azalt.",
+                "Ağacın içini havalandıracak şekilde budama yapmayı değerlendir.",
+                "Gerekirse etiketine uygun mantar hastalığına yönelik koruyucu uygulamaları düşün."
+            ]
+        elif "black_rot" in condition:
+            tips = [
+                "Çürüyen meyveleri ve lekeli yaprakları ortamdan uzaklaştır.",
+                "Budama artıkları ve döküntüleri bahçede bırakma.",
+                "Bitkiyi fazla sıkıştırma; hava sirkülasyonunu artır.",
+                "Gerekirse etiketine uygun fungisitleri değerlendirebilirsin."
+            ]
+        elif "cedar_apple_rust" in condition:
+            tips = [
+                "Enfekte yaprakları temizle; döküntüleri toplayıp imha et.",
+                "Hava sirkülasyonunu artır; yaprakların hızlı kurumasını sağla.",
+                "Yakında ardıç/servi türleri varsa kaynak olabileceğini unutma.",
+                "Gerekirse etiketine uygun pas hastalığına yönelik ürünleri değerlendir."
+            ]
+        elif "powdery_mildew" in condition:
+            tips = [
+                "Hasta yaprakları temizle; bitkiler arası hava akışını artır.",
+                "Üstten sulamadan kaçın; yaprakları kuru tut.",
+                "Gerekirse etiketine uygun külleme ilacı kullanmayı değerlendir."
+            ]
+        elif "rust" in condition:
+            tips = [
+                "Enfekte yaprakları temizle ve çevreye saçılmasını önle.",
+                "Hava sirkülasyonunu artır; bitkiyi çok sık dikme.",
+                "Gerekirse etiketine uygun pas hastalığına yönelik ürün kullanmayı değerlendir."
+            ]
+        elif "gray_leaf_spot" in condition:
+            tips = [
+                "Alt ve çok lekeli yaprakları temizle; bitki sıklığını azalt.",
+                "Üstten sulamayı azalt; yaprakların hızlı kurumasını sağla.",
+                "Tarlada/alan içinde bitki artıkları yönetimine dikkat et.",
+                "Gerekirse etiketine uygun fungisitleri değerlendirebilirsin."
+            ]
+        elif "northern_leaf_blight" in condition:
+            tips = [
+                "Şiddetli etkilenen yaprakları temizle ve imha et.",
+                "Bitkiler arasında hava akışını artır.",
+                "Üstten sulamadan kaçın; yaprak ıslaklığını azalt.",
+                "Gerekirse etiketine uygun mantar hastalığına yönelik ürün kullanmayı değerlendir."
+            ]
+        elif "esca" in condition:
+            tips = [
+                "Şiddetli etkilenen sürgün/omcaları budama ile ayırmayı değerlendir.",
+                "Budama aletlerini dezenfekte et; bulaş riskini azalt.",
+                "Bitki stresini azalt: düzenli sulama ve dengeli gübreleme.",
+                "Belirtiler yaygınsa bağ uzmanı/zirai danışmandan destek al."
+            ]
+        elif "leaf_blight" in condition:
+            tips = [
+                "Lekeli yaprakları temizle ve imha et.",
+                "Yaprak ıslaklığını azalt; toprağa/dipten sulamayı tercih et.",
+                "Hava sirkülasyonunu artır; bitkiyi sıkıştırma.",
+                "Gerekirse etiketine uygun fungisitleri değerlendirebilirsin."
+            ]
+        elif "leaf_scorch" in condition:
+            tips = [
+                "Kuruyan/yanık görünümlü yaprakları temizle.",
+                "Sulama düzenini kontrol et; toprak tamamen kurumadan sulamayı planla.",
+                "Sıcak/kurak günlerde doğrudan öğle güneşini azaltmayı değerlendir.",
+                "Belirtiler hızla artarsa hastalık olasılığı için ek görsel/uzman görüşü al."
+            ]
+        else:
+            tips = [
+                "Hastalıklı görünen yaprakları temizle ve at.",
+                "Üstten sulamadan kaçın; toprağa/dipten sulamayı tercih et.",
+                "Bitkiyi iyi havalanan bir konuma al ve yoğunluğu azalt.",
+                "Belirtiler artarsa yerel bir ziraat bayii/uzmanla görüş."
+            ]
     
     para = f"Son teşhise göre **{tr}** olasılığı yüksek (≈%{pct}). Aşağıdaki adımları uygulayabilirsin:"
     return para + "\n- " + "\n- ".join(tips)
@@ -284,7 +355,7 @@ async def summarize_into_memory(uid: str, thread_id: str, recent: List[dict]):
                 p = m["content"]
                 if isinstance(p, str): p = json.loads(p)
                 if p.get("type") == "diagnosis":
-                    tr = CLASS_TR.get(p.get("class"), p.get("class"))
+                    tr = to_tr_label(str(p.get("class") or ""))
                     c = f"[TEŞHİS] {tr} (%{round(float(p.get('confidence',0))*100)})"
             except Exception:
                 pass

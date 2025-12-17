@@ -49,7 +49,7 @@ async def chat_ws(websocket: WebSocket):
 
     Sonraki mesaj tipleri:
     - {"type":"user_text", "text":"Toprak değişmeli mi?"}
-    - {"type":"diagnosis", "class":"late_blight", "confidence":0.82, "image_ref":"...", "auto_reply": true}
+    - {"type":"diagnosis", "class":"Tomato__Late_Blight", "confidence":0.82, "image_ref":"...", "auto_reply": true}
     - {"type":"ping"}
     """
     await websocket.accept()
