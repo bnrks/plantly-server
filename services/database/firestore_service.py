@@ -3,6 +3,7 @@
 
 import os
 from datetime import datetime, timezone
+import time
 from typing import Optional, List, Any
 from fastapi import HTTPException
 from google.cloud import firestore
@@ -34,6 +35,66 @@ def thread_ref(uid: str, thread_id: str):
 def messages_col(uid: str, thread_id: str):
     """Thread'in mesaj koleksiyonunu döndür"""
     return thread_ref(uid, thread_id).collection("messages")
+
+
+def plants_col(uid: str):
+    """Kullanıcının bitkiler koleksiyonunu döndür"""
+    return get_firestore_client().collection("users").document(uid).collection("plants")
+
+
+def plant_ref(uid: str, plant_id: str):
+    """Belirli bir bitki doküman referansını döndür"""
+    return plants_col(uid).document(plant_id)
+
+
+def update_plant_disease(
+    uid: str,
+    plant_id: str,
+    *,
+    cls: str,
+    cls_tr: str,
+    conf: float,
+    thread_id: Optional[str] = None,
+    image_ref: Optional[str] = None,
+) -> None:
+    """Bitkinin hastalık alanını (son teşhis) güncelle.
+
+    Firestore path: users/{uid}/plants/{plant_id}
+    Alanlar merge edilir; doküman yoksa oluşturulur.
+    """
+    if not plant_id:
+        return
+
+    now = datetime.now(timezone.utc)
+    entry = {
+        "class": cls,
+        "classTr": cls_tr,
+        "confidence": conf,
+        "at": now,
+        "threadId": thread_id or None,
+        "imageRef": image_ref or None,
+    }
+
+    ref = plant_ref(uid, plant_id)
+
+    # diseaseHistory: map (keyed) + lastDisease: map
+    # Key example: 1734631234567 (ms since epoch) to keep ordering-friendly keys.
+    key = str(int(time.time() * 1000))
+
+    snap = ref.get()
+    if not snap.exists:
+        ref.set(
+            {
+                "lastDisease": entry,
+                "diseaseHistory": {key: entry},
+            },
+            merge=True,
+        )
+        return
+
+    # Ensure lastDisease always updated; add one new history entry without overwriting the whole map.
+    ref.set({"lastDisease": entry}, merge=True)
+    ref.update({f"diseaseHistory.{key}": entry})
 
 
 def ensure_thread(
@@ -155,4 +216,48 @@ def get_thread_memory(uid: str, thread_id: str) -> dict:
 
 def save_thread_memory(uid: str, thread_id: str, memory: dict):
     thread_ref(uid, thread_id).set({"memory": memory}, merge=True)
+
+
+def get_plant_disease_context(uid: str, plant_id: str, *, limit_n: int = 5) -> dict:
+    """Bitkinin hastalık geçmişini LLM'e göndermeye uygun şekilde getir.
+
+    Dönen dict:
+      {
+        "plantId": str,
+        "lastDisease": {...} | None,
+        "history": [ {...}, ... ]
+      }
+    """
+    if not plant_id:
+        return {"plantId": plant_id, "lastDisease": None, "history": []}
+
+    snap = plant_ref(uid, plant_id).get()
+    if not snap.exists:
+        return {"plantId": plant_id, "lastDisease": None, "history": []}
+
+    data = snap.to_dict() or {}
+    last_disease = data.get("lastDisease")
+    history_map = data.get("diseaseHistory") or {}
+
+    entries = []
+    if isinstance(history_map, dict):
+        for _, v in history_map.items():
+            if isinstance(v, dict):
+                entries.append(v)
+
+    def _sort_key(e: dict):
+        at = e.get("at")
+        # Firestore Timestamp -> has datetime() usually; but keep generic
+        try:
+            if hasattr(at, "datetime"):
+                return at.datetime()
+        except Exception:
+            pass
+        return at or datetime.min.replace(tzinfo=timezone.utc)
+
+    entries.sort(key=_sort_key)
+    if limit_n and limit_n > 0:
+        entries = entries[-limit_n:]
+
+    return {"plantId": plant_id, "lastDisease": last_disease, "history": entries}
 

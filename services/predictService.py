@@ -1,4 +1,5 @@
 # predictService.py - Model ve helper fonksiyonları
+import io
 import json
 from pathlib import Path
 
@@ -48,3 +49,32 @@ def preprocess(img: Image.Image) -> np.ndarray:
     img = img.convert("RGB").resize(IMG_SIZE)
     arr = np.asarray(img, dtype=np.float32)  # 0-255
     return arr[None, ...]
+
+
+def _softmax_logits(arr: np.ndarray) -> np.ndarray:
+    """Softmax uygula (model çıktısı softmax değilse güvence olsun)."""
+    e = np.exp(arr - np.max(arr))
+    return e / np.sum(e)
+
+
+def run_cnn_prediction(image_bytes: bytes) -> tuple[str, float, list[float]]:
+    """Görüntü bytes'ı → (class_label, confidence, probs[])"""
+    if not image_bytes:
+        raise ValueError("Boş görüntü")
+
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    x = preprocess(img)  # (1, 256, 256, 3) float32
+
+    probs = model.predict(x, verbose=0)[0]
+    if not isinstance(probs, np.ndarray):
+        probs = np.array(probs, dtype=np.float32)
+
+    # Eğer model output'u softmax değilse normalleştir:
+    if np.any(probs < 0) or np.sum(probs) > 1.01:
+        probs = _softmax_logits(probs)
+
+    idx = int(np.argmax(probs))
+    cls = CLASSES[idx]
+    conf = float(probs[idx])
+
+    return cls, conf, [float(p) for p in probs]

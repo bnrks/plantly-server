@@ -22,7 +22,8 @@ MEM_FACTS_LIMIT = int(os.getenv("MEM_FACTS_LIMIT", "8"))            # sabit ger�
 
 from ..database.firestore_service import (
     fetch_recent_messages, thread_ref,
-    get_thread_memory, save_thread_memory, trim_history_by_chars
+    get_thread_memory, save_thread_memory, trim_history_by_chars,
+    get_plant_disease_context
 )
 
 # Groq Configuration
@@ -42,10 +43,12 @@ SYSTEM_PROMPT = (
     "- Kullanıcı bakım/hastalıkla ilgili soru sorarsa, varsa son teşhisi de dikkate alarak yanıtla.\n\n"
     "ÖNEMLİ: Yanıtını şu JSON formatında ver:\n"
     "{\n"
+    '  "diagnosisTr": "Teşhis adı (Türkçe, yoksa boş string)",\n'
     '  "content": "Ana cevabın buraya gelsin",\n'
     '  "notes": ["Sadece gerçek bakım önerileri varsa ekle"]\n'
     "}\n"
     "KURALLER:\n"
+    "- diagnosisTr: Teşhis bilgisi verildiyse Türkçe/sade isim; yoksa \"\"\n"
     "- content: Her zaman doldur\n"
     "- notes: Sadece bitki bakımı/hastalık tedavisi önerileri varsa doldur\n"
     "- Selamlaşma, teşekkür, genel sohbet durumlarında notes boş array [] ver\n"
@@ -71,7 +74,8 @@ def is_smalltalk(text: Optional[str]) -> bool:
 
 
 def build_llm_messages(uid: str, thread_id: str, user_text: Optional[str],
-                       *, append_user_text: bool = True,
+                       *, plant_id: Optional[str] = None,
+                       append_user_text: bool = True,
                        force_include_diag: Optional[bool] = None,
                        history_k: int = 20) -> List[dict]:
 
@@ -93,6 +97,50 @@ def build_llm_messages(uid: str, thread_id: str, user_text: Optional[str],
         facts = memory.get("facts") or []
         if facts:
             messages.append({"role":"system", "content": "Sabit gerçekler:\n- " + "\n- ".join(facts)})
+
+    # (B2) Bitki hastalık geçmişi (plant_id verilirse)
+    if plant_id:
+        try:
+            ctx = get_plant_disease_context(uid, plant_id, limit_n=5)
+            last = ctx.get("lastDisease")
+            hist = ctx.get("history") or []
+
+            def _fmt_at(at_val) -> str:
+                try:
+                    if hasattr(at_val, "datetime"):
+                        at_val = at_val.datetime()
+                except Exception:
+                    pass
+                if isinstance(at_val, datetime):
+                    return at_val.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M")
+                return ""
+
+            def _fmt_entry(e: dict) -> str:
+                cls = str(e.get("class") or "")
+                tr = (str(e.get("classTr") or "").strip() or to_tr_label(cls)).strip()
+                conf = float(e.get("confidence", 0) or 0)
+                at_s = _fmt_at(e.get("at"))
+                pct = f"%{round(conf * 100)}" if conf else ""
+                prefix = f"{at_s}: " if at_s else ""
+                suffix = f" ({pct})" if pct else ""
+                return f"{prefix}{tr}{suffix}".strip()
+
+            lines = []
+            if isinstance(last, dict) and last:
+                lines.append(f"Son hastalık/teşhis: {_fmt_entry(last)}")
+            if hist:
+                formatted = [s for s in (_fmt_entry(e) for e in hist) if s]
+                if formatted:
+                    lines.append("Hastalık geçmişi (son kayıtlar):\n- " + "\n- ".join(formatted))
+
+            if lines:
+                messages.append({
+                    "role": "system",
+                    "content": f"Bitki geçmişi (plantId={plant_id}):\n" + "\n".join(lines)
+                })
+        except Exception:
+            # Geçmiş bulunamazsa konuşmayı bozma
+            pass
 
     # teşhis ekleme logic'i (senin mevcut kodun)
     include_diag = False
@@ -162,6 +210,7 @@ async def call_groq_api_structured(messages: List[dict]) -> dict:
         if not isinstance(response_data, dict):
             raise ValueError("Response dict değil")
             
+        diagnosis_tr = response_data.get("diagnosisTr", "")
         content = response_data.get("content", "")
         notes = response_data.get("notes", [])
         
@@ -169,6 +218,7 @@ async def call_groq_api_structured(messages: List[dict]) -> dict:
             notes = []
             
         return {
+            "diagnosisTr": diagnosis_tr if isinstance(diagnosis_tr, str) else "",
             "content": content,
             "notes": notes
         }
@@ -176,6 +226,7 @@ async def call_groq_api_structured(messages: List[dict]) -> dict:
     except (json.JSONDecodeError, ValueError, KeyError):
         # JSON parse edilemezse fallback
         return {
+            "diagnosisTr": "",
             "content": raw_response,
             "notes": []
         }

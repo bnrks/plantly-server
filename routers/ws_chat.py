@@ -17,7 +17,8 @@ from services.chat.groq_service import (
     build_llm_messages, call_groq_api, call_groq_api_structured, generate_fallback_reply, summarize_into_memory,
     generate_conversation_title
 )
-from services.ml.prediction_service import run_cnn_prediction
+from services.predictService import run_cnn_prediction
+from services.ml.class_translations import to_tr_label
 
 # -------------------- .env & Configuration --------------------
 from dotenv import load_dotenv
@@ -197,6 +198,7 @@ async def analyze_image(
     id_token: str = Header(..., alias="idToken"),  # Firebase ID token (header)
     file: UploadFile = File(...),
     thread_id: Optional[str] = Form(None),
+    plant_id: Optional[str] = Form(None),
     auto_reply: Optional[bool] = Form(False),
 ):
     """
@@ -222,10 +224,26 @@ async def analyze_image(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Model inference hatası: {e}")
 
+    cls_tr = to_tr_label(cls)
+
     # 4) Sohbete systemEvent olarak ekle + lastDiagnosis güncelle
-    diag_payload = {"type": "diagnosis", "class": cls, "confidence": conf, "imageRef": None}
+    diag_payload = {"type": "diagnosis", "class": cls, "classTr": cls_tr, "confidence": conf, "imageRef": None}
     mid = add_message(uid, t_id, role="systemEvent", content=diag_payload)
     update_last_diagnosis(uid, t_id, cls=cls, conf=conf, image_ref=None)
+
+    # 4.1) (opsiyonel) plant_id geldiyse bitkinin hastalık alanını güncelle
+    if plant_id:
+        from services.database.firestore_service import update_plant_disease
+
+        update_plant_disease(
+            uid,
+            plant_id,
+            cls=cls,
+            cls_tr=cls_tr,
+            conf=conf,
+            thread_id=t_id,
+            image_ref=None,
+        )
 
     # 5) WS yayını (açık oda varsa)
     await manager.broadcast(t_id, {
@@ -244,26 +262,62 @@ async def analyze_image(
         )
         messages = build_llm_messages(
             uid, t_id, user_text=auto_user,
+            plant_id=plant_id,
             append_user_text=True,
             force_include_diag=True            # foto sonrası proaktif
         )
-        asst_text = await call_groq_api(messages)
+        asst_payload = await call_groq_api_structured(messages)
 
-        # Boş geldiyse güvenli fallback yaz
-        if not asst_text.strip():
-            asst_text = generate_fallback_reply(cls, conf)
+        # Her koşulda teşhis alanını biz garanti edelim
+        asst_payload["diagnosisTr"] = cls_tr
+        asst_payload["classTr"] = cls_tr
+        asst_payload["class"] = cls
+        asst_payload["confidence"] = conf
 
-        asst_mid = add_message(uid, t_id, role="assistant", content=asst_text)
+        # Boş geldiyse güvenli fallback (structured gibi dön)
+        if not str(asst_payload.get("content") or "").strip():
+            fallback_text = generate_fallback_reply(cls, conf)
+            asst_payload["content"] = fallback_text
+            asst_payload.setdefault("notes", [])
+
+        assistant_text = str(asst_payload.get("content") or "").strip()
+        # Mobilde doğrudan gösterim için: teşhis Türkçe olarak içerikte de geçsin
+        if cls_tr and cls_tr.lower() not in assistant_text.lower():
+            assistant_text = f"Teşhis: {cls_tr}.\n\n{assistant_text}".strip()
+
+        notes = asst_payload.get("notes", [])
+        asst_meta = {
+            "diagnosisTr": cls_tr,
+            "classTr": cls_tr,
+            "class": cls,
+            "confidence": conf,
+            "notes": notes,
+        }
+
+        asst_mid = add_message(uid, t_id, role="assistant", content=assistant_text, meta=asst_meta)
         await manager.broadcast(t_id, {
             "type": "message",
             "thread_id": t_id,
-            "message": {"role": "assistant", "content": asst_text, "id": asst_mid}
+            "message": {
+                "role": "assistant",
+                "content": assistant_text,
+                "id": asst_mid,
+                **asst_meta,
+            }
         })
-        asst = {"message_id": asst_mid, "content": asst_text}
+        asst = {
+            "message_id": asst_mid,
+            "content": assistant_text,
+            "diagnosisTr": cls_tr,
+            "classTr": cls_tr,
+            "class": cls,
+            "confidence": conf,
+            "notes": notes,
+        }
     
     return {
         "thread_id": t_id,
-        "diagnosis": {"class": cls, "confidence": conf, "probs": probs},
+        "diagnosis": {"class": cls, "classTr": cls_tr, "confidence": conf, "probs": probs},
         "message_id": mid,
         "assistant": asst  # auto_reply=false ise null/None; true ise mesaj içeriği var
     }

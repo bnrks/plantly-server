@@ -1,11 +1,9 @@
 # routers/predict.py - Predict endpoint'leri
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
-import numpy as np
 import time
-from PIL import Image
-import io
-from services.predictService import preprocess, CLASSES, model
+from services.predictService import run_cnn_prediction
+from services.ml.class_translations import to_tr_label
 
 router = APIRouter(tags=["predict"])
 
@@ -20,20 +18,15 @@ async def predict_endpoint(file: UploadFile = File(...)):
         else:
             # Alternatif okuma yöntemi
             image_data = await file.file.read()
-            
-        img = Image.open(io.BytesIO(image_data))
-        
-        # Preprocess
-        x = preprocess(img)
-        
-        # Model ile tahmin yap
-        probs = model.predict(x, verbose=0)[0]
-        idx = int(np.argmax(probs))
+
+        cls, conf, probs = run_cnn_prediction(image_data)
+        cls_tr = to_tr_label(cls)
         
         return JSONResponse({
-            "class": CLASSES[idx],
-            "confidence": float(probs[idx]),
-            "probs": [float(p) for p in probs],
+            "class": cls,
+            "classTr": cls_tr,
+            "confidence": conf,
+            "probs": probs,
             "latency_ms": int((time.time()-t0)*1000)
         })
     except Exception as e:

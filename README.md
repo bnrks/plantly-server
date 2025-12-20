@@ -74,9 +74,9 @@ plantly-server/
     ├── database/                   # Veritabanı işlemleri
     │   ├── __init__.py
     │   └── firestore_service.py
-    └── ml/                         # Makine öğrenmesi
-        ├── __init__.py
-        └── prediction_service.py
+    └── ml/                         # Makine öğrenmesi (yardımcılar)
+      ├── __init__.py
+      └── class_translations.py
 ```### 🔧 Teknoloji Stack'i
 
 #### Backend Framework
